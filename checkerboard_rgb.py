@@ -47,8 +47,8 @@ class checker():
                 # ✅ tuple 需要保持类型不变
                 setattr(self, key, type(val)(moved))
 
-    self.device = device
-    return self
+        self.device = device
+        return self
 
     def latent(self, IS ):
         """ generate checkerboard according to the HFOV.
@@ -63,10 +63,11 @@ class checker():
         image = np.ones((erows, ecols), dtype=np.uint8) * 220
 
         # Generate the checkerboard pattern
-        for row in range(erows):
-            for col in range(ecols):
-                if (row // square_size + col // square_size) % 2 == 0:
-                    image[row, col] = 15
+        row_idx = np.arange(erows) // square_size
+        col_idx = np.arange(ecols) // square_size
+        checker_mask = (row_idx[:, None] + col_idx[None, :]) % 2 == 0
+        image = np.full((erows, ecols), 220, dtype=np.uint8)
+        image[checker_mask] = 15
                     # image[row, col] = 0
         # Rotate the image by the specified skew angle
         center = (erows // 2, ecols // 2)

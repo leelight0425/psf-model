@@ -1,0 +1,1 @@
+checkboard中的masaic模块注意cmos输入阵列，原始为rggb，若cmos输入不一致需重新做翻转操作
