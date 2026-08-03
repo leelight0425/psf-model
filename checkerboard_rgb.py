@@ -37,18 +37,18 @@ class checker():
         self.square_size = square_size
 
     def to(self, device=torch.device('cpu')):
-        """ Move all variables to target device.
-        """
+        """Move all tensor attributes to target device."""
         for key, val in vars(self).items():
             if torch.is_tensor(val):
-                exec('self.{x} = self.{x}.to(device)'.format(x=key))
-            elif val.__class__.__name__ in ('list', 'tuple'):
-                for i, v in enumerate(val):
-                    if torch.is_tensor(v):
-                        exec('self.{x}[{i}] = self.{x}[{i}].to(device)'.format(x=key, i=i))
+                # ✅ 直接用 setattr 替代 exec
+                setattr(self, key, val.to(device))
+            elif isinstance(val, (list, tuple)):
+                moved = [v.to(device) if torch.is_tensor(v) else v for v in val]
+                # ✅ tuple 需要保持类型不变
+                setattr(self, key, type(val)(moved))
 
-        self.device = device
-        return self
+    self.device = device
+    return self
 
     def latent(self, IS ):
         """ generate checkerboard according to the HFOV.

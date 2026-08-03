@@ -13,7 +13,6 @@ def config(path):
     with open(path) as f:
         args = yaml.load(f, Loader=yaml.FullLoader)
     args['in_path']= os.path.join(current_path,args['input_dir'],args['filename']+'.xlsx')
-    args['in_path'] = os.path.join(current_path, args['input_dir'], args['filename'] + '.xlsx')
     list = ['mat','crop','npy']
     for key in list:
         path = os.path.join(args['dataset'],args['filename'], key, args['noise'])

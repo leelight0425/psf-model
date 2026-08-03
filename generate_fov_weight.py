@@ -59,7 +59,7 @@ if __name__ == "__main__":
     IS = model.optics_rgb.IS(filepath=args['in_path'])
     hfov = int(IS.hfov)+ 1
     # directory = args['mat']
-    directory = '.\dataset\\63762BB\mat\shot0.00'
+    directory = r'.\dataset\63762BB\mat\shot0.00'
     # arg['npy'] =
     mat_files = [file for file in os.listdir(directory) if file.endswith('.mat')]
     sorted_mat_files = sorted(mat_files)
