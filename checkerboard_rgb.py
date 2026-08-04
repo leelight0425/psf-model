@@ -262,15 +262,15 @@ class checker():
         red = upsamplebyX(red.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
 
         green_red = bayer_images[Ellipsis, 1:2]
-        green_red = torch.flip(green_red, dims=[1])  # Flip left-right
+        green_red = torch.flip(green_red, dims=[2])  # Shift left (Gr at col=1 → col=0)
         green_red = upsamplebyX(green_red.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
-        green_red = torch.flip(green_red, dims=[1])  # Flip left-right
+        green_red = torch.flip(green_red, dims=[2])  # Shift back
         green_red = SpaceToDepth_fact2(green_red.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
 
         green_blue = bayer_images[Ellipsis, 2:3]
-        green_blue = torch.flip(green_blue, dims=[0])  # Flip up-down
+        green_blue = torch.flip(green_blue, dims=[1])  # Shift up (Gb at row=1 → row=0)
         green_blue = upsamplebyX(green_blue.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
-        green_blue = torch.flip(green_blue, dims=[0])  # Flip up-down
+        green_blue = torch.flip(green_blue, dims=[1])  # Shift back
         green_blue = SpaceToDepth_fact2(green_blue.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
 
         green_at_red = (green_red[Ellipsis, 0] + green_blue[Ellipsis, 0]) / 2
@@ -284,9 +284,9 @@ class checker():
         green = DepthToSpace_fact2(torch.stack(green_planes, dim=-1).permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
 
         blue = bayer_images[Ellipsis, 3:4]
-        blue = torch.flip(torch.flip(blue, dims=[1]), dims=[0])
+        blue = torch.flip(blue, dims=[1, 2])  # Shift up+left (B at row=1,col=1 → row=0,col=0)
         blue = upsamplebyX(blue.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
-        blue = torch.flip(torch.flip(blue, dims=[1]), dims=[0])
+        blue = torch.flip(blue, dims=[1, 2])  # Shift back
 
         rgb_images = torch.cat([red, green, blue], dim=-1)
         rgb_images = rgb_images.permute(0, 3, 1, 2)  # Re-Permute the tensor back to BxCxHxW format
