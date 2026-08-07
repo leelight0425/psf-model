@@ -331,6 +331,8 @@ def sfrmat5_rgb(image, npol=5, wflag=0, weight=None, alpha=1.0):
         sfr: (nn2out, 5) array [[freq, sfr_R, sfr_G, sfr_B, sfr_lum], ...]
         esf_all: (nn, 4) supersampled ESF [R, G, B, Lum]
         offset: (2,) array [R-G, B-G] colour misregistration from ESF
+        rot: float, edge rotation angle in degrees (rot = angle + 90, where
+            angle = degrees(arctan(vslope)) is the edge angle from vertical)
     """
     if weight is None:
         weight = np.array([0.213, 0.715, 0.072])
@@ -407,6 +409,12 @@ def sfrmat5_rgb(image, npol=5, wflag=0, weight=None, alpha=1.0):
 
     # ---- Edge angle & sampling correction (MATLAB lines 496-526) ----
     vslope = -fitme1[-1, -2]  # linear slope from last channel (luminance)
+
+    # Edge angle from vertical (degrees); rot differs from angle by 90°.
+    # Used as the rotation label in the training dataset instead of the
+    # filename-parsed value. Normalized to [0, 180).
+    angle = np.degrees(np.arctan(vslope))
+    rot = (angle + 90.0) % 180.0
 
     # Adjust for valid lines per ISO 12233
     if abs(fitme1[-1, -2]) > 1e-10:
@@ -505,7 +513,7 @@ def sfrmat5_rgb(image, npol=5, wflag=0, weight=None, alpha=1.0):
         (np.sum(nor_esf[:, 2]) - np.sum(nor_esf[:, 1])) / 4.0,  # B - G
     ])
 
-    return sfr, esf_all, offset
+    return sfr, esf_all, offset, rot
 
 
 # ==============================================================================
@@ -550,7 +558,7 @@ def process_folder(dir_path, save_path, npol=5, wflag=0):
             continue
 
         fov = float(match.group(1))
-        rot = float(match.group(2))
+        rot_gt = float(match.group(2))  # ground-truth rotation from filename (print only)
 
         image = cv2.imread(filepath, cv2.IMREAD_UNCHANGED)
         if image is None:
@@ -564,10 +572,10 @@ def process_folder(dir_path, save_path, npol=5, wflag=0):
         else:
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        print(f"Processing: {filename}  (fov={fov:.2f}°, rot={rot:.2f}°) ...", end=" ")
+        print(f"Processing: {filename}  (fov={fov:.2f}°, rot_gt={rot_gt:.2f}°) ...", end=" ")
 
         try:
-            sfr, esf, offset = sfrmat5_rgb(image, npol=npol, wflag=wflag)
+            sfr, esf, offset, rot = sfrmat5_rgb(image, npol=npol, wflag=wflag)
 
             # Validity check matching MATLAB: max(sfr(:,2))==1 && no NaN
             sfr_ok = (np.max(sfr[:, 1]) >= 0.99 and
@@ -581,7 +589,7 @@ def process_folder(dir_path, save_path, npol=5, wflag=0):
                     'sfr': sfr,
                     'offset': offset.reshape(1, 2),
                 })
-                print("OK")
+                print(f"OK (rot_meas={rot:.2f}°)")
                 n_saved += 1
             else:
                 print(f"SKIP (invalid SFR)")
