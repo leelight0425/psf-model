@@ -1,0 +1,31 @@
+# ──────────────────────────────────────────
+# Config for REAL (non-simulated) checkerboard photos
+# ──────────────────────────────────────────
+# Usage (single image):
+#   python process_real.py --image <photo> --config configs/real.yaml --full
+# Usage (batch folder):
+#   python process_real.py --dir <folder> --config configs/real.yaml --full
+# ──────────────────────────────────────────
+
+# Lens identifier (used for output folder naming under dataset/)
+lens_name: 'real_lens'
+
+# ── Sensor / camera parameters ──
+# Sensor pixel pitch (mm/pixel).  Example: IMX586 = 0.8 um = 0.0008 mm
+pixel_size: 0.0014
+# Effective focal length (mm)
+focal_length: 4.25
+# Max half-FOV to keep (degrees).  Patches beyond this are discarded.
+hfov_max: 35.0
+
+# ── Checkerboard patch extraction ──
+# Approximate square side length in the photo (pixels).  Used for corner offset.
+square_size: 200
+# Half-width of the extracted edge region (pixels).  Default 24 -> 48x48 tiles.
+edge_half_width: 24
+
+# ── Output paths (relative to project root) ──
+# Directory under dataset/ where crop patches are written
+dataset_dir: 'dataset'
+# Noise-level subfolder (matches simulation convention shot0.00)
+noise: 'shot0.00'

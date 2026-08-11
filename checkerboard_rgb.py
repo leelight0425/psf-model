@@ -136,6 +136,87 @@ class checker():
 
 
     @staticmethod
+    def crop_real(image, savepath, pixel_size, focal_length, edge_half_width=24,
+                  square_size=200, hfov_max=None):
+        """
+        Extract slanted-edge patches from a REAL checkerboard photo (no PSF simulation).
+
+        Designed for photos taken with a real lens whose optical parameters are
+        unknown.  The blur is already baked into the image by the real lens.
+
+        The edge orientation is NOT pre-computed here — sfrmat5's rotatev2 will
+        detect the actual edge angle automatically during SFR measurement.
+
+        Args:
+            image:          np.ndarray (H,W) or (H,W,3) — real checkerboard photo
+            savepath:       str — output directory for edge-patch TIFF files
+            pixel_size:     float — sensor pixel pitch (mm/pixel)
+            focal_length:   float — effective focal length (mm)
+            edge_half_width:int — half-width of extracted edge patch (default 24 → 48×48)
+            square_size:    int — checkerboard square side length in pixels (approximate)
+            hfov_max:       float|None — max half-FOV to keep (deg).  None = keep all.
+
+        Returns:
+            list[dict] — metadata for each saved patch (keys: fov, filename)
+        """
+        if len(image.shape) == 2:
+            gray = image.copy()
+            rgb = np.stack([gray, gray, gray], axis=-1)
+        else:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            rgb = image.copy()
+
+        h_img, w_img = gray.shape[:2]
+        center_y, center_x = h_img // 2, w_img // 2
+        ewid = edge_half_width
+
+        # ── 1. Harris corner detection ──
+        h_coords = corner_peaks(corner_harris(gray), min_distance=5,
+                                threshold_rel=0.03)
+        if len(h_coords) == 0:
+            print("WARNING: No corners detected. Try lowering threshold_rel.")
+            return []
+
+        # Vertical edge positions = horizontal corners shifted by ½ square
+        v_coords = h_coords + np.array([square_size // 2,
+                                        -square_size // 12])
+
+        os.makedirs(savepath, exist_ok=True)
+
+        saved = []
+        for i in range(h_coords.shape[0]):
+            row, col = v_coords[i, 0], v_coords[i, 1]
+
+            # Bounds check
+            if row < ewid or row + ewid >= h_img or col < ewid or col + ewid >= w_img:
+                continue
+
+            cropped = rgb[row - ewid:row + ewid, col - ewid:col + ewid]
+            if cropped.shape[0] * cropped.shape[1] != (2 * ewid) ** 2:
+                continue
+
+            # ── 2. FOV from pixel position ──
+            vx = col - center_x
+            vy = center_y - row
+            fov = np.rad2deg(np.arctan(np.sqrt(vx ** 2 + vy ** 2) * pixel_size
+                                       / focal_length))
+
+            if hfov_max is not None and abs(fov) > abs(hfov_max):
+                continue
+
+            # ── 3. Save edge patch (no blur convolution — real lens blur) ──
+            # sfrmat5 will auto-detect edge angle via rotatev2, so we don't
+            # encode a pre-computed angle into the filename or .mat output.
+            fname = f'x{int(vx)}_y{int(vy)}_fov{fov:.2f}_v.tif'
+            cv2.imwrite(os.path.join(savepath, fname), cropped)
+            saved.append({'fov': fov, 'filename': fname,
+                          'vx': int(vx), 'vy': int(vy)})
+
+        print(f"crop_real: saved {len(saved)} / {h_coords.shape[0]} patches "
+              f"to {savepath}")
+        return saved
+
+    @staticmethod
     def convolve1(image,psfs,IS,fov,rot,wid):
         """ generate blurry checkerboard by path convolve with the psfs. """
         idx = int(10*fov)

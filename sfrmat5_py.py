@@ -545,20 +545,28 @@ def process_folder(dir_path, save_path, npol=5, wflag=0):
     print(f"  npol={npol}, wflag={wflag} (window={'Tukey' if wflag==0 else 'Hamming'})")
     print()
 
-    pattern = r'fov(-?\d+\.\d+)_angle(-?\d+\.\d+)'
+    # ── Parse fov (& optionally angle) from filename ──
+    # Old simulation format:   x{dx}_y{dy}_fov{fov}_angle{rot}_v.tif
+    # New real-photo format:   x{dx}_y{dy}_fov{fov}_v.tif
+    pattern_old = r'fov(-?\d+\.\d+)_angle(-?\d+\.\d+)'
+    pattern_new = r'fov(-?\d+\.\d+)_v'
+
     n_saved, n_skipped, n_errors = 0, 0, 0
 
     for filename in file_list:
         filepath = os.path.join(dir_path, filename)
 
-        match = re.search(pattern, filename)
-        if not match:
-            print(f"SKIP: {filename} — cannot parse fov/rot from filename")
-            n_skipped += 1
-            continue
-
-        fov = float(match.group(1))
-        rot_gt = float(match.group(2))  # ground-truth rotation from filename (print only)
+        match = re.search(pattern_old, filename)
+        if match:
+            fov = float(match.group(1))
+        else:
+            match = re.search(pattern_new, filename)
+            if match:
+                fov = float(match.group(1))
+            else:
+                print(f"SKIP: {filename} — cannot parse fov from filename")
+                n_skipped += 1
+                continue
 
         image = cv2.imread(filepath, cv2.IMREAD_UNCHANGED)
         if image is None:
@@ -572,7 +580,7 @@ def process_folder(dir_path, save_path, npol=5, wflag=0):
         else:
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        print(f"Processing: {filename}  (fov={fov:.2f}°, rot_gt={rot_gt:.2f}°) ...", end=" ")
+        print(f"Processing: {filename}  (fov={fov:.2f}°) ...", end=" ")
 
         try:
             sfr, esf, offset, rot = sfrmat5_rgb(image, npol=npol, wflag=wflag)
