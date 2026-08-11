@@ -44,15 +44,15 @@ def clear_create_folder(folder_path,clear=False):
 if __name__=='__main__':
     path = 'configs/ss.yaml'
     args = config(path)
-    IS = model.optics_rgb.IS(filepath=args['in_path'])
+    IS = model.optics_rgb.IS(filepath=args['in_path'])#生成psf
     checker = model.checkerboard_rgb.checker(square_size = 200)
     checker.square_size = 200
-    checker.latent(IS)
+    checker.latent(IS)#得到棋盘格
 
     save_path, mat_path = args['crop'],args['mat']
     clear_create_folder(save_path,clear= True)
     clear_create_folder(mat_path, clear=True)
-    checker.crop(IS, save_path)
+    checker.crop(IS, save_path)#角点
 
 
 

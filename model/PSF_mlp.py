@@ -10,7 +10,7 @@ class seidel2wavefront(nn.Module):
         super(seidel2wavefront, self).__init__()
 
     def forward(self, seidel, IS, color, BS):
-        # BS = seidel.shape[0]
+        # BS = s
         M = IS.wf_res[color]
         sel_basis = IS.seidel_basis[color]
         num_seidel = sel_basis[color].shape[-1]
