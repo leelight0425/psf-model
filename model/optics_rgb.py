@@ -12,16 +12,20 @@ import matplotlib.pyplot as plt
 
 class IS():
 
-    def __init__(self, filepath=None, device=torch.device('cpu'), pixelsize=1.25):
+    def __init__(self, filepath=None, device=torch.device('cpu'), pixelsize=None, s_psf=None, sensor_res=None, efl=None):
 
         super(IS, self).__init__()
         self.device = device
+        # Optional overrides from config yaml (None -> read/compute from xlsx).
+        self.s_psf_cfg = s_psf
+        self.res_cfg = sensor_res
+        self.efl_cfg = efl
+        self.pixelsize = pixelsize if pixelsize is not None else 1.25
 
         # Load lens file.
         if filepath is not None:
             filename = os.path.basename(filepath)  # 获取完整文件名（包含后缀）
             self.lens_name = os.path.splitext(filename)[0]
-            self.pixelsize = 1.25
             self.load_file(filepath)
         # Move all variables to device.
         self.to(device)
@@ -66,10 +70,10 @@ class IS():
         sys = pd.read_excel(filepath, sheet_name='sys', header=None, index_col=None)
         sys = sys.values.tolist()
         self.wl = [item[1:] for item in sys if item[0] == 'wl'][0]
-        self.efl = [item[1] for item in sys if item[0] == 'efl'][0]
+        self.efl = self.efl_cfg if self.efl_cfg is not None else [item[1] for item in sys if item[0] == 'efl'][0]
         self.na = [item[1] for item in sys if item[0] == 'na'][0]
         self.hfov = int([item[1] for item in sys if item[0] == 'hfov'][0])
-        self.s_psf = int([item[1] for item in sys if item[0] == 's_psf'][0])
+        self.s_psf = self.s_psf_cfg if self.s_psf_cfg is not None else int([item[1] for item in sys if item[0] == 's_psf'][0])
         self.diag = np.tan(np.deg2rad(self.hfov)) * self.efl / self.pixelsize
 
     def seidel(self, seidel):
@@ -83,8 +87,11 @@ class IS():
             self.scale.append(px_sim / self.pixelsize)
 
     def res(self):
-        res_diag = 2 * math.tan(math.radians(self.hfov)) * self.efl / self.pixelsize
-        self.res = [2 * int(res_diag * 0.6) // 2, 2 * int(res_diag * 0.8) // 2]
+        if self.res_cfg is not None:
+            self.res = [int(x) for x in self.res_cfg]
+        else:
+            res_diag = 2 * math.tan(math.radians(self.hfov)) * self.efl / self.pixelsize
+            self.res = [2 * int(res_diag * 0.6) // 2, 2 * int(res_diag * 0.8) // 2]
         wf_res = []
         for i in range(3):
             wf_res.append(int(self.s_psf / self.scale[i] + 1))

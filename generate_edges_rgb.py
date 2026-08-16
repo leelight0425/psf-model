@@ -10,7 +10,7 @@ def config(path):
     """
     # Config file
     current_path = os.getcwd()
-    with open(path) as f:
+    with open(path, encoding='utf-8') as f:
         args = yaml.load(f, Loader=yaml.FullLoader)
     args['in_path']= os.path.join(current_path,args['input_dir'],args['filename']+'.xlsx')
     list = ['mat','crop','npy']

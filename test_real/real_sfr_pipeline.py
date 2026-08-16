@@ -36,20 +36,91 @@ import sfrmat5_py as sf
 
 warnings.filterwarnings('ignore')
 
-PATTERN = (9, 6)          # 棋盘格内角点数（列, 行），OpenCV 约定
+PATTERN = (9, 6)          # 默认棋盘格内角点数（列, 行），OpenCV 约定
+# 未指定 --pattern-cols/rows 时自动尝试的候选尺寸（OpenCV 必须给定尺寸，无法自动检测）
+AUTO_PATTERNS = [(9, 6), (10, 7), (10, 8), (11, 8), (12, 8), (12, 9), (13, 9), (13, 10),
+                 (14, 10), (9, 7), (8, 6), (8, 5), (7, 5), (9, 5), (11, 7), (11, 9),
+                 (12, 10), (15, 10), (10, 9), (9, 8)]
 TILT_MIN_DEG = 5.0        # ISO 12233: 斜边最小倾斜角
 PATCH_FRAC = 0.35         # patch 半宽 = frac * 方格尺寸（保证只含一条边）
 
+# 相机 RAW 扩展名（需 rawpy 处理），其余由 OpenCV 读取
+RAW_EXTENSIONS = {'.dng', '.arw', '.nef', '.cr2', '.cr3', '.raf', '.rw2', '.orf', '.pef', '.srw', '.raw'}
+# Bayer pattern → OpenCV 去马赛克转换（RGGB 为仓库默认，见 notes.md）
+BAYER_TO_CV2 = {
+    'RGGB': cv2.COLOR_BayerRG2RGB,
+    'GRBG': cv2.COLOR_BayerGR2RGB,
+    'GBRG': cv2.COLOR_BayerGB2RGB,
+    'BGGR': cv2.COLOR_BayerBG2RGB,
+}
 
-def detect_grid(bgr_img):
-    """检测棋盘格角点，返回亚像素角点数组 (N,2) 或 None。"""
+
+def load_image_rgb(path, bayer_pattern=None):
+    """把任意输入图片统一转为 RGB uint8 (H, W, 3) 供 sfrmat5 使用。
+
+    - 相机 RAW（.dng/.arw/.nef/...）:用 rawpy 后处理（去马赛克 + 相机白平衡 + gamma）
+    - 单通道（灰度或 Bayer 马赛克 .tif）:指定 --bayer-pattern 时按 Bayer 去马赛克，否则按灰度
+    - 16bit:按 1%~99% 分位数裁剪缩放到 8bit（保证棋盘格对比度）
+    - 其余:BGR→RGB
+    """
+    ext = os.path.splitext(path)[1].lower()
+    if ext in RAW_EXTENSIONS:
+        try:
+            import rawpy
+        except ImportError:
+            raise SystemExit(f'{path} 是 RAW 文件，需要先安装 rawpy：pip install rawpy')
+        raw = rawpy.imread(path)
+        # 线性输出：不做 gamma/色调曲线（会改变 MTF 形状）、16bit、关闭自动提亮。
+        # 相机白平衡是每通道线性增益，不影响 MTF。随后由下方 16bit 分位数裁剪线性缩放到 8bit。
+        img = raw.postprocess(use_camera_wb=True, no_auto_bright=True,
+                              output_bps=16, gamma=(1, 1))
+        raw.close()
+    else:
+        img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+        if img is None:
+            return None
+        if img.ndim == 2:
+            if bayer_pattern:
+                code = BAYER_TO_CV2.get(bayer_pattern.upper())
+                if code is None:
+                    raise SystemExit(f'未知 bayer pattern：{bayer_pattern}（可选 RGGB/GRBG/GBRG/BGGR）')
+                img = cv2.cvtColor(img, code)
+            else:
+                img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+        elif img.shape[2] == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        elif img.shape[2] == 4:
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
+
+    if img.dtype == np.uint16:
+        p_low, p_high = np.percentile(img, (1, 99))
+        img = np.clip((img.astype(np.float32) - p_low) / max(p_high - p_low, 1) * 255, 0, 255).astype(np.uint8)
+    elif img.dtype != np.uint8:
+        img = np.clip(img, 0, 255).astype(np.uint8)
+    return img
+
+
+def detect_grid(bgr_img, pattern=None):
+    """检测棋盘格角点，返回 (亚像素角点数组 (N,2), 实际采用的 pattern) 或 (None, None)。
+
+    pattern 为 None 时按 AUTO_PATTERNS 逐个尝试，取检测到角点数最多的（避免对
+    大棋盘格误匹配成更小的部分网格）。
+    """
     gray = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2GRAY)
-    ret, corners = cv2.findChessboardCorners(gray, PATTERN, None)
-    if not ret:
-        return None
+    candidates = [pattern] if pattern is not None else AUTO_PATTERNS
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-    c2 = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
-    return c2.reshape(-1, 2)
+    best = None  # (角点数, pts, pattern)
+    for p in candidates:
+        ret, corners = cv2.findChessboardCorners(gray, p, None)
+        if not ret:
+            continue
+        c2 = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
+        n = len(c2)
+        if best is None or n > best[0]:
+            best = (n, c2.reshape(-1, 2), p)
+    if best is None:
+        return None, None
+    return best[1], best[2]
 
 
 def grid_edges(pts):
@@ -94,39 +165,43 @@ def grid_edges(pts):
     return edges, sq
 
 
-def crop_patch(bgr_img, mid_x, mid_y, half):
+def crop_patch(rgb_img, mid_x, mid_y, half):
     """以 (mid_x, mid_y) 为中心裁剪 (2*half)x(2*half) 方形 patch，返回 RGB 数组或 None。"""
-    h, w = bgr_img.shape[:2]
+    h, w = rgb_img.shape[:2]
     x0, y0 = int(mid_x) - half, int(mid_y) - half
     if x0 < 0 or y0 < 0 or x0 + 2 * half > w or y0 + 2 * half > h:
         return None
-    patch = bgr_img[y0:y0 + 2 * half, x0:x0 + 2 * half]
-    return cv2.cvtColor(patch, cv2.COLOR_BGR2RGB)
+    return rgb_img[y0:y0 + 2 * half, x0:x0 + 2 * half]
 
 
 def process_image(path, save_dir=None, npol=5, min_mtf=0.99, mtf50_level=0.5,
-                  tilt_min=TILT_MIN_DEG, patch_frac=PATCH_FRAC):
+                  tilt_min=TILT_MIN_DEG, patch_frac=PATCH_FRAC, pattern=PATTERN,
+                  bayer_pattern=None):
     """处理单张真实棋盘格图片，返回统计 dict。
 
     Args:
-        path: 图片路径
+        path: 图片路径（JPEG/PNG/TIFF/相机 RAW，RAW 自动转 RGB）
         save_dir: 若给定，保存有效 .mat
         npol: sfrmat5 边缘拟合多项式阶数
         min_mtf: 有效性条件①——MTF 峰值需 ≥ 该值
         mtf50_level: 有效性条件③——MTF 需降到 ≤ 该值（MTF50 可定义）
         tilt_min: 斜边最小倾斜角（度），低于则跳过
         patch_frac: patch 半宽 = frac * 方格尺寸
+        pattern: 棋盘格内角点数 (列, 行)
+        bayer_pattern: 单通道 .tif 的 Bayer 排列 (RGGB/GRBG/GBRG/BGGR)，None=按灰度
     """
-    bgr = cv2.imread(path)
-    if bgr is None:
+    rgb = load_image_rgb(path, bayer_pattern)
+    if rgb is None:
         print(f"  ERROR: 无法读取 {path}")
         return None
 
     name = os.path.splitext(os.path.basename(path))[0]
-    pts = detect_grid(bgr)
+    pts, used_pattern = detect_grid(rgb, pattern)
     if pts is None:
-        print(f"  ERROR: 未检测到棋盘格角点 pattern={PATTERN}")
+        print(f"  ERROR: 未检测到棋盘格角点 (尝试 pattern={AUTO_PATTERNS if pattern is None else pattern})")
         return None
+    if pattern is None:
+        print(f"  [{name}] 自动匹配棋盘格内角点数: {used_pattern}")
 
     edges, sq = grid_edges(pts)
     half = max(int(sq * patch_frac), 10)
@@ -145,12 +220,12 @@ def process_image(path, save_dir=None, npol=5, min_mtf=0.99, mtf50_level=0.5,
             n_tilt += 1
             continue  # 倾斜角不达标，跳过（ISO 12233 要求）
 
-        rgb = crop_patch(bgr, mx, my, half)
-        if rgb is None:
+        patch = crop_patch(rgb, mx, my, half)
+        if patch is None:
             continue
         n_tot += 1
         try:
-            sfr, esf, offset, rot = sf.sfrmat5_rgb(rgb, npol=npol, wflag=0)
+            sfr, esf, offset, rot = sf.sfrmat5_rgb(patch, npol=npol, wflag=0)
         except Exception:
             n_nan += 1
             continue
@@ -172,6 +247,7 @@ def process_image(path, save_dir=None, npol=5, min_mtf=0.99, mtf50_level=0.5,
         mtf50_list.append(mtf50)
 
         if save_dir:
+            h, w = rgb.shape[:2]
             out = os.path.join(save_dir, f"{name}_e{i:02d}{j:02d}_tilt{tilt:.1f}.mat")
             savemat(out, {
                 'fov': np.array([[np.nan]]),
@@ -179,6 +255,10 @@ def process_image(path, save_dir=None, npol=5, min_mtf=0.99, mtf50_level=0.5,
                 'sfr': sfr,
                 'offset': offset.reshape(1, 2),
                 'tilt': np.array([[tilt]]),
+                'cx': np.array([[mx]]),
+                'cy': np.array([[my]]),
+                'img_h': np.array([[h]]),
+                'img_w': np.array([[w]]),
             })
             saved += 1
 
@@ -217,7 +297,14 @@ def main():
                         help='斜边最小倾斜角/度 (默认 5.0)')
     parser.add_argument('--patch-frac', type=float, default=PATCH_FRAC,
                         help='patch 半宽 = frac × 方格尺寸 (默认 0.35)')
+    parser.add_argument('--pattern-cols', type=int, default=None,
+                        help='棋盘格内角点列数 (默认自动尝试候选)')
+    parser.add_argument('--pattern-rows', type=int, default=None,
+                        help='棋盘格内角点行数 (默认自动尝试候选)')
+    parser.add_argument('--bayer-pattern', default=None,
+                        help='单通道 .tif 的 Bayer 排列 RGGB/GRBG/GBRG/BGGR (默认按灰度)')
     ns = parser.parse_args()
+    pattern = (ns.pattern_cols, ns.pattern_rows) if (ns.pattern_cols and ns.pattern_rows) else None
 
     args = ns.images
     if not args:
@@ -228,14 +315,15 @@ def main():
     print("=" * 70)
     print("真实棋盘格 → 边缘裁剪 → sfrmat5 测量流程验证")
     print(f"  判定条件: min_mtf≥{ns.min_mtf}, MTF 降到≤{ns.mtf50_level}, "
-          f"tilt_min={ns.tilt_min}°, npol={ns.npol}, patch_frac={ns.patch_frac}")
+          f"tilt_min={ns.tilt_min}°, npol={ns.npol}, patch_frac={ns.patch_frac}, pattern={pattern}")
     print("=" * 70)
     all_stats = []
     for p in args:
         print(f"\n处理: {p}")
         st = process_image(p, ns.save, npol=ns.npol, min_mtf=ns.min_mtf,
                            mtf50_level=ns.mtf50_level, tilt_min=ns.tilt_min,
-                           patch_frac=ns.patch_frac)
+                           patch_frac=ns.patch_frac, pattern=pattern,
+                           bayer_pattern=ns.bayer_pattern)
         if st:
             all_stats.append(st)
 
