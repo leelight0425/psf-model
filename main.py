@@ -1,22 +1,28 @@
+import argparse
 from model.PSF_mlp import *
 from model.optics_rgb import *
 import utils.train as train
 
 if __name__ == '__main__':
-    # default 1
-    num = 0
-    torch.manual_seed(num)
-    source = './configs/63762BB.yaml'
-    print(f'seed = {num}')
-    # print(source)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('config', nargs='?', default='./configs/63762BB.yaml')
+    ns = parser.parse_args()
+    source = ns.config
     args = train.config(source)
 
+    seed = int(args.get('seed', 0))
+    torch.manual_seed(seed)
+    print(f'seed = {seed}')
+
+    device = args.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
+    print(f'device = {device}')
+
     result_path = args['result_path']
-    IS = IS(filepath=args['in_path'])
+    IS = IS(filepath=args['in_path'], s_psf=args.get('s_psf'), sensor_res=args.get('sensor_res'),
+            efl=args.get('efl'), pixelsize=args.get('pixelsize'))
     IS.seidel_basis = IS.s_basis(IS.wf_res, type=args['net'])
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    net = PSF_mlp().to(device)
+    net = PSF_mlp(device=device)
 
-    shiftnet = shift_net()
+    shiftnet = shift_net(device=device)
     train.train(net, shiftnet, IS, args)

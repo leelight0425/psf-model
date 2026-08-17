@@ -15,10 +15,11 @@ def config(source):
     """ Config file
     """
     current_path = os.getcwd()
-    with open(source) as f:
+    with open(source, encoding='utf-8') as f:
         args = yaml.load(f, Loader=yaml.FullLoader)
     filename = args['filename']
-    args['in_path'] = os.path.join(current_path, args['input_dir'], filename + '.xlsx')
+    lens = args.get('lens', filename)
+    args['in_path'] = os.path.join(current_path, args['input_dir'], lens + '.xlsx')
     args['result_path'] = os.path.join(current_path, args['result'], filename)
     return args
 
@@ -84,6 +85,40 @@ def psf_map(psfs):
     psfmap = psf_matrix.permute(0, 2, 1, 3, 4).contiguous().view(X * h, Y * w, c)
     return psf_matrix, psfmap
 
+def save_psf_grid(psfs, IS, result_dir, rows=9, cols=12):
+    'input: psf list (field height), output: one npz per grid position, name encodes sensor pixel coords'
+    import os
+    import numpy as np
+    from datetime import datetime
+
+    psf_dir = os.path.join(result_dir, 'psf_grid')
+    if not os.path.exists(psf_dir):
+        os.makedirs(psf_dir)
+
+    H_img, W_img = int(IS.res[0]), int(IS.res[1])
+    num = len(psfs)
+    Hs = torch.linspace(0, 1, num)
+    channel = psfs[0].size(2)
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+    for i in range(rows):
+        for j in range(cols):
+            cy, cx = (rows - 1) / 2 - i, j - (cols - 1) / 2
+            H = np.sqrt(cx ** 2 + cy ** 2) / np.sqrt(((rows - 1) / 2) ** 2 + ((cols - 1) / 2) ** 2)
+            index = torch.argmin(torch.abs(H - Hs))
+            rot = np.arctan2(cy, cx) - np.pi / 2
+            psf = []
+            for color in range(channel):
+                psf.append(rotatepsf(psfs[index][:, :, color], rot))
+            psf = torch.stack(psf, dim=-1)
+            cx_px = int(round((j + 0.5) * W_img / cols))
+            cy_px = int(round((i + 0.5) * H_img / rows))
+            name = 'GR_{}_00_{}x{}_cx={}_cy={}.npz'.format(ts, W_img, H_img, cx_px, cy_px)
+            np.savez(os.path.join(psf_dir, name),
+                     psf=psf.detach().cpu().numpy().astype(np.float32),
+                     cx=np.array(cx_px),
+                     cy=np.array(cy_px))
+
 def shiftpsf(x, shifts, mode='bilinear'):
     if len(x.squeeze().shape) == 2:
         x = x.squeeze().unsqueeze(0).unsqueeze(0)
@@ -115,6 +150,8 @@ def train(net,shiftnet, IS, args):
     lr = args['lr']
     epochs = args['epochs']
     interval = args['interval']
+    num_psf = int(args.get('num_psf', 21))
+    device = next(net.parameters()).device
     # net.init_weights()
 
     folder_path = glob.glob(os.path.join(args['npy'], '*.npz'))
@@ -126,12 +163,12 @@ def train(net,shiftnet, IS, args):
     for file in folder_path:
         data = np.load(file)
         for key in keys:
-            tensor = torch.from_numpy(data[key].astype(np.float32) if key == 'rot' else data[key]).cuda()
+            tensor = torch.from_numpy(data[key].astype(np.float32) if key == 'rot' else data[key]).to(device)
             data_dict[key].append(tensor)
 
     sfrs, weights, fovs, rots, offsets = [torch.stack(data_dict[key], dim=-1).squeeze() for key in keys]
 
-    Hs = torch.linspace(0,1,21)
+    Hs = torch.linspace(0,1,num_psf)
     psf_all = []
     colors = ['R','G','B']
     for color in range(3):
@@ -143,13 +180,13 @@ def train(net,shiftnet, IS, args):
             weight, rot, fov = (tensor[id] for tensor in [weights, rots, fovs])
             H = tools.fov2H(fov, IS)
             sfr = sfrs[...,color,id]
-            IS.seidel_basis = IS.s_basis(IS.wf_res, type='ss')
+            IS.seidel_basis = IS.s_basis(IS.wf_res, type=args.get('net', 'ss'))
 
             for epoch in range(epochs):
                 _, _, psf = net(IS, H, color)
                 psf = tools.downsample(psf, IS.s_psf)
                 mtf_2d = tools.PSF2MTF(psf, size=(2 * IS.s_psf - 1) * 5)
-                mtf = tools.slice(mtf_2d, rot).cuda()
+                mtf = tools.slice(mtf_2d, rot).to(device)
                 loss = torch.sum(weight * torch.mean(torch.abs(mtf - sfr.T), dim=-1))
                 optimizer.zero_grad()
                 loss.backward()
@@ -192,7 +229,7 @@ def train(net,shiftnet, IS, args):
                 interg.append(rot_interg(psfs[i], rot))
             shiftr = interg[0] - interg[1]
             shiftb = interg[2]-  interg[1]
-            loss = torch.sum(weight * (torch.abs(shiftr.cuda() - offset[0, :]) + torch.abs(shiftb.cuda() - offset[1, :])))
+            loss = torch.sum(weight * (torch.abs(shiftr.to(device) - offset[0, :]) + torch.abs(shiftb.to(device) - offset[1, :])))
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -206,6 +243,11 @@ def train(net,shiftnet, IS, args):
     print(f'Results saved in: {result_dir}')
     if not os.path.exists(result_dir):
         os.makedirs(result_dir)
+
+    # export individual PSFs per grid position (filename encodes sensor pixel coords)
+    grid_rows = int(args.get('grid_rows', 9))
+    grid_cols = int(args.get('grid_cols', 12))
+    save_psf_grid(psf_final, IS, result_dir, rows=grid_rows, cols=grid_cols)
 
     # save results, psf_matrix (9,12,25,25,3) psfmap [225,300,3]
     psf_matrix, psfmap = psf_map(psf_ori)

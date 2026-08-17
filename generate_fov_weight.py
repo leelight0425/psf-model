@@ -16,9 +16,10 @@ def config(path):
     """
     # Config file
     current_path = os.getcwd()
-    with open(path) as f:
+    with open(path, encoding='utf-8') as f:
         args = yaml.load(f, Loader=yaml.FullLoader)
-    args['in_path']= os.path.join(current_path,args['input_dir'],args['filename']+'.xlsx')
+    lens = args.get('lens', args['filename'])
+    args['in_path']= os.path.join(current_path,args['input_dir'],lens+'.xlsx')
     list = ['mat', 'npy', 'crop']
 
     for key in list:
@@ -52,31 +53,48 @@ def save_npy(gt_list,weights, filename_l, path):
         np.savez(npy_path,sfr=sfr,weight=weight,rot=rot,fov=fov,offset=offset)
 
 
+def fov_from_position(temp, IS):
+    """ 实拍数据:由边缘中心像素坐标 + 焦距/像元尺寸计算视场角。
+    r = 边缘中心到图像中心的像素距离, fov = atan(r * pixelsize / efl)。 """
+    cx, cy = float(temp['cx'][0, 0]), float(temp['cy'][0, 0])
+    dx = cx - float(temp['img_w'][0, 0]) / 2
+    dy = cy - float(temp['img_h'][0, 0]) / 2
+    r = math.sqrt(dx ** 2 + dy ** 2)
+    fov = math.degrees(math.atan(r * IS.pixelsize / IS.efl))
+    return np.array([[fov]])
+
+
 if __name__ == "__main__":
-    path = 'configs/ss.yaml'
+    parser = argparse.ArgumentParser()
+    parser.add_argument('config', nargs='?', default='configs/ss.yaml')
+    ns = parser.parse_args()
+    path = ns.config
     args = config(path)
     print(args['npy'])
-    IS = model.optics_rgb.IS(filepath=args['in_path'])
-    hfov = int(IS.hfov)+ 1
-    # directory = args['mat']
-    directory = r'.\dataset\63762BB\mat\shot0.00'
-    # arg['npy'] =
-    mat_files = [file for file in os.listdir(directory) if file.endswith('.mat')]
-    sorted_mat_files = sorted(mat_files)
-    # hfov = args['hfov']
+    IS = model.optics_rgb.IS(filepath=args['in_path'],
+                             efl=args.get('efl'), pixelsize=args.get('pixelsize'))
+    hfov = int(IS.hfov) + 1
 
-    data = []
-    filename = []
-    # 遍历文件夹中的所有文件
-    for file_name in sorted_mat_files:
-        file_path = os.path.join(directory, file_name)
-        # 使用loadmat函数读取.mat文件
-        temp = loadmat(file_path)
-        data.append(temp)
+    real = args.get('real', False)
+    if real:
+        directory = args.get('mat_dir')
+        if not directory:
+            raise SystemExit('real 模式必须在配置中指定 mat_dir(实拍 .mat 目录)')
+    else:
+        directory = args.get('mat_dir', os.path.join(args['dataset'], args['filename'], 'mat', args.get('noise', '')))
+
+    mat_files = sorted([file for file in os.listdir(directory) if file.endswith('.mat')])
+    data, filename = [], []
+    for file_name in mat_files:
+        temp = loadmat(os.path.join(directory, file_name))
+        item = {'rot': temp['rot'] + 360 if temp['rot'] < 0 else temp['rot'],
+                'sfr': temp['sfr'],
+                'fov': temp['fov'],
+                'offset': temp['offset']}
+        if real:
+            item['fov'] = fov_from_position(temp, IS)
+        data.append(item)
         filename.append(file_name)
-
-    # length = (temp['sfr'].shape[0]+1)//2
-    data = [{'rot': item['rot'] + 360 if item['rot'] < 0 else item['rot'],'sfr': item['sfr'], 'fov': item['fov'],'offset': item['offset']} for item in data]
 
     'determine weight matrix'
     fov_m, weights_all, gt_list ,filename_l = [], [], [],[]
