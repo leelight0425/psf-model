@@ -314,7 +314,8 @@ def _rotatev2(a):
     return a_out, nlin, npix, rflag
 
 
-def sfrmat5_rgb(image, npol=5, wflag=0, weight=None, alpha=1.0):
+def sfrmat5_rgb(image, npol=5, wflag=0, weight=None, alpha=1.0,
+                field_azimuth=None):
     """
     Python port of sfrmat5 for RGB images (non-GUI mode, io=1, del=1).
 
@@ -326,13 +327,15 @@ def sfrmat5_rgb(image, npol=5, wflag=0, weight=None, alpha=1.0):
         wflag: window type (0=Tukey, 1=Hamming)
         weight: RGB→Luminance weights (default: [0.213, 0.715, 0.072])
         alpha: Tukey window alpha parameter (default 1.0)
+        field_azimuth: field position azimuth in image coordinates. Required
+            to produce the shared PSF rotation convention.
 
     Returns:
         sfr: (nn2out, 5) array [[freq, sfr_R, sfr_G, sfr_B, sfr_lum], ...]
         esf_all: (nn, 4) supersampled ESF [R, G, B, Lum]
         offset: (2,) array [R-G, B-G] colour misregistration from ESF
-        rot: float, edge rotation angle in degrees (rot = angle + 90, where
-            angle = degrees(arctan(vslope)) is the edge angle from vertical)
+        rot: float, PSF rotation angle using the shared convention
+            `-(field_azimuth - 90 - degrees(arctan(vslope)))`.
     """
     if weight is None:
         weight = np.array([0.213, 0.715, 0.072])
@@ -413,8 +416,10 @@ def sfrmat5_rgb(image, npol=5, wflag=0, weight=None, alpha=1.0):
     # Edge angle from vertical (degrees); rot differs from angle by 90°.
     # Used as the rotation label in the training dataset instead of the
     # filename-parsed value. Normalized to [0, 180).
-    angle = np.degrees(np.arctan(vslope))
-    rot = (angle + 90.0) % 180.0
+    if field_azimuth is None:
+        raise ValueError('field_azimuth is required for the shared rot convention')
+    edge_tilt = np.degrees(np.arctan(vslope))
+    rot = -(field_azimuth - 90.0 - edge_tilt)
 
     # Adjust for valid lines per ISO 12233
     if abs(fitme1[-1, -2]) > 1e-10:
@@ -568,6 +573,14 @@ def process_folder(dir_path, save_path, npol=5, wflag=0):
                 n_skipped += 1
                 continue
 
+        xy = re.search(r'x(-?\d+(?:\.\d+)?)_y(-?\d+(?:\.\d+)?)', filename)
+        if not xy:
+            print(f"SKIP: {filename} — cannot parse field position from filename")
+            n_skipped += 1
+            continue
+        vx, vy = float(xy.group(1)), float(xy.group(2))
+        field_azimuth = np.degrees(np.arctan2(vy, vx))
+
         image = cv2.imread(filepath, cv2.IMREAD_UNCHANGED)
         if image is None:
             print(f"SKIP: {filename} — cannot read file")
@@ -583,7 +596,8 @@ def process_folder(dir_path, save_path, npol=5, wflag=0):
         print(f"Processing: {filename}  (fov={fov:.2f}°) ...", end=" ")
 
         try:
-            sfr, esf, offset, rot = sfrmat5_rgb(image, npol=npol, wflag=wflag)
+            sfr, esf, offset, rot = sfrmat5_rgb(
+                image, npol=npol, wflag=wflag, field_azimuth=field_azimuth)
 
             # Validity check matching MATLAB: max(sfr(:,2))==1 && no NaN
             sfr_ok = (np.max(sfr[:, 1]) >= 0.99 and

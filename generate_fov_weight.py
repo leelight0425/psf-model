@@ -53,14 +53,14 @@ def save_npy(gt_list,weights, filename_l, path):
         np.savez(npy_path,sfr=sfr,weight=weight,rot=rot,fov=fov,offset=offset)
 
 
-def fov_from_position(temp, IS):
+def fov_from_position(temp, efl, pixelsize):
     """ 实拍数据:由边缘中心像素坐标 + 焦距/像元尺寸计算视场角。
     r = 边缘中心到图像中心的像素距离, fov = atan(r * pixelsize / efl)。 """
     cx, cy = float(temp['cx'][0, 0]), float(temp['cy'][0, 0])
     dx = cx - float(temp['img_w'][0, 0]) / 2
     dy = cy - float(temp['img_h'][0, 0]) / 2
     r = math.sqrt(dx ** 2 + dy ** 2)
-    fov = math.degrees(math.atan(r * IS.pixelsize / IS.efl))
+    fov = math.degrees(math.atan(r * pixelsize / efl))
     return np.array([[fov]])
 
 
@@ -71,11 +71,16 @@ if __name__ == "__main__":
     path = ns.config
     args = config(path)
     print(args['npy'])
-    IS = model.optics_rgb.IS(filepath=args['in_path'],
-                             efl=args.get('efl'), pixelsize=args.get('pixelsize'))
-    hfov = int(IS.hfov) + 1
-
     real = args.get('real', False)
+    if real:
+        efl = args.get('efl')
+        pixelsize = args.get('pixelsize')
+        hfov = int(args.get('hfov', args.get('hfov_max', 35))) + 1
+    else:
+        IS = model.optics_rgb.IS(filepath=args['in_path'],
+                                 efl=args.get('efl'), pixelsize=args.get('pixelsize'))
+        efl = pixelsize = None
+        hfov = int(IS.hfov) + 1
     if real:
         directory = args.get('mat_dir')
         if not directory:
@@ -92,7 +97,7 @@ if __name__ == "__main__":
                 'fov': temp['fov'],
                 'offset': temp['offset']}
         if real:
-            item['fov'] = fov_from_position(temp, IS)
+            item['fov'] = fov_from_position(temp, efl, pixelsize)
         data.append(item)
         filename.append(file_name)
 

@@ -21,9 +21,11 @@
 
 import os
 import sys
+import re
 import warnings
 import numpy as np
 import cv2
+import yaml
 from scipy.spatial import cKDTree
 from scipy.io import savemat
 
@@ -45,7 +47,9 @@ TILT_MIN_DEG = 5.0        # ISO 12233: 斜边最小倾斜角
 PATCH_FRAC = 0.35         # patch 半宽 = frac * 方格尺寸（保证只含一条边）
 
 # 相机 RAW 扩展名（需 rawpy 处理），其余由 OpenCV 读取
-RAW_EXTENSIONS = {'.dng', '.arw', '.nef', '.cr2', '.cr3', '.raf', '.rw2', '.orf', '.pef', '.srw', '.raw'}
+RAW_EXTENSIONS = {'.dng', '.arw', '.nef', '.cr2', '.cr3', '.raf', '.rw2', '.orf', '.pef', '.srw'}
+# 裸 Bayer RAW 扩展名：无元数据，直接由 OpenCV 按 --bayer-pattern 读取并去马赛克
+BAYER_RAW_EXTENSIONS = {'.raw'}
 # Bayer pattern → OpenCV 去马赛克转换（RGGB 为仓库默认，见 notes.md）
 BAYER_TO_CV2 = {
     'RGGB': cv2.COLOR_BayerRG2RGB,
@@ -59,6 +63,7 @@ def load_image_rgb(path, bayer_pattern=None):
     """把任意输入图片统一转为 RGB uint8 (H, W, 3) 供 sfrmat5 使用。
 
     - 相机 RAW（.dng/.arw/.nef/...）:用 rawpy 后处理（去马赛克 + 相机白平衡 + gamma）
+    - 裸 Bayer RAW（.raw）:无元数据，需用 --bayer-pattern 由 OpenCV 读取单通道并去马赛克
     - 单通道（灰度或 Bayer 马赛克 .tif）:指定 --bayer-pattern 时按 Bayer 去马赛克，否则按灰度
     - 16bit:按 1%~99% 分位数裁剪缩放到 8bit（保证棋盘格对比度）
     - 其余:BGR→RGB
@@ -75,6 +80,40 @@ def load_image_rgb(path, bayer_pattern=None):
         img = raw.postprocess(use_camera_wb=True, no_auto_bright=True,
                               output_bps=16, gamma=(1, 1))
         raw.close()
+    elif ext in BAYER_RAW_EXTENSIONS:
+        # 裸 Bayer RAW：无 rawpy 元数据，按 --bayer-pattern 读取单通道数据并去马赛克。
+        if not bayer_pattern:
+            raise SystemExit(f'{path} 是裸 Bayer RAW 文件，必须用 --bayer-pattern 指定布局（RGGB/GRBG/GBRG/BGGR）')
+        code = BAYER_TO_CV2.get(bayer_pattern.upper())
+        if code is None:
+            raise SystemExit(f'未知 bayer pattern：{bayer_pattern}（可选 RGGB/GRBG/GBRG/BGGR）')
+        data = np.fromfile(path, dtype=np.uint8)
+        if data.size == 0:
+            return None
+        # 8-bit 或 16-bit 判断：size = H*W*bytes_per_pixel
+        if data.size % 2 == 0 and data.size // 2 % 2 == 0:
+            u16 = data.view('<u2')
+            # 若按 16bit 能组成矩形且数值范围合理，则按 16bit 解析
+            if (u16.size % 2 == 0) and (u16.max() > 255 or u16.max() <= 0):
+                data = u16
+        n = data.size
+        # 从文件名解析宽x高（如 4000x3000 → W=4000, H=3000）；失败则尝试两种朝向。
+        dims = None
+        m = re.search(r'(\d+)\s*[xX]\s*(\d+)', os.path.basename(path))
+        if m:
+            w_num, h_num = int(m.group(1)), int(m.group(2))
+            if w_num * h_num == n:
+                dims = [(h_num, w_num)]
+        if dims is None:
+            dims = [(3000, 4000), (4000, 3000)]
+        img = None
+        for (h, w) in dims:
+            if h * w == n:
+                img = data.reshape(h, w)
+                break
+        if img is None:
+            raise SystemExit(f'{path} 无法根据文件大小 {data.nbytes} 推断单通道 Bayer 形状')
+        img = cv2.cvtColor(img, code)
     else:
         img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
         if img is None:
@@ -118,6 +157,16 @@ def detect_grid(bgr_img, pattern=None):
         n = len(c2)
         if best is None or n > best[0]:
             best = (n, c2.reshape(-1, 2), p)
+    # SB is slower but handles large, low-contrast, or mildly distorted boards
+    # that the legacy detector can miss.
+    if best is None and hasattr(cv2, 'findChessboardCornersSB'):
+        for p in candidates:
+            ret, corners = cv2.findChessboardCornersSB(gray, p, None)
+            if not ret:
+                continue
+            n = len(corners)
+            if best is None or n > best[0]:
+                best = (n, corners.reshape(-1, 2), p)
     if best is None:
         return None, None
     return best[1], best[2]
@@ -224,8 +273,11 @@ def process_image(path, save_dir=None, npol=5, min_mtf=0.99, mtf50_level=0.5,
         if patch is None:
             continue
         n_tot += 1
+        h, w = rgb.shape[:2]
+        field_azimuth = np.degrees(np.arctan2(h / 2.0 - my, mx - w / 2.0))
         try:
-            sfr, esf, offset, rot = sf.sfrmat5_rgb(patch, npol=npol, wflag=0)
+            sfr, esf, offset, rot = sf.sfrmat5_rgb(
+                patch, npol=npol, wflag=0, field_azimuth=field_azimuth)
         except Exception:
             n_nan += 1
             continue
@@ -247,7 +299,6 @@ def process_image(path, save_dir=None, npol=5, min_mtf=0.99, mtf50_level=0.5,
         mtf50_list.append(mtf50)
 
         if save_dir:
-            h, w = rgb.shape[:2]
             out = os.path.join(save_dir, f"{name}_e{i:02d}{j:02d}_tilt{tilt:.1f}.mat")
             savemat(out, {
                 'fov': np.array([[np.nan]]),
@@ -287,7 +338,10 @@ def main():
         description="真实棋盘格 → 边缘裁剪 → sfrmat5 测量流程。"
                     "未指定图片时默认处理 test_real/downloads 下全部图片。")
     parser.add_argument('images', nargs='*', help='图片路径（可多个）')
-    parser.add_argument('--save', metavar='DIR', help='保存有效 .mat 到目录')
+    parser.add_argument('--config', default='configs/real.yaml',
+                        help='YAML 配置路径（默认 configs/real.yaml）')
+    parser.add_argument('--save', metavar='DIR', default='test_real/out',
+                        help='保存有效 .mat 的目录（默认 test_real/out）')
     parser.add_argument('--npol', type=int, default=5, help='sfrmat5 边缘拟合多项式阶数 (默认 5)')
     parser.add_argument('--min-mtf', type=float, default=0.99,
                         help='有效性①：MTF 峰值 ≥ 该值 (默认 0.99)')
@@ -301,16 +355,27 @@ def main():
                         help='棋盘格内角点列数 (默认自动尝试候选)')
     parser.add_argument('--pattern-rows', type=int, default=None,
                         help='棋盘格内角点行数 (默认自动尝试候选)')
-    parser.add_argument('--bayer-pattern', default=None,
+    parser.add_argument('--bayer-pattern', default='GBRG',
                         help='单通道 .tif 的 Bayer 排列 RGGB/GRBG/GBRG/BGGR (默认按灰度)')
     ns = parser.parse_args()
-    pattern = (ns.pattern_cols, ns.pattern_rows) if (ns.pattern_cols and ns.pattern_rows) else None
+    config = {}
+    if ns.config:
+        try:
+            with open(ns.config, encoding='utf-8') as f:
+                config = yaml.safe_load(f) or {}
+        except FileNotFoundError:
+            if ns.config != 'configs/real.yaml':
+                raise
+    pattern_cols = ns.pattern_cols or config.get('pattern_cols')
+    pattern_rows = ns.pattern_rows or config.get('pattern_rows')
+    pattern = (int(pattern_cols), int(pattern_rows)) if pattern_cols and pattern_rows else None
 
     args = ns.images
     if not args:
         default_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'downloads')
         args = [os.path.join(default_dir, f)
-                for f in sorted(os.listdir(default_dir)) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.tif'))]
+                for f in sorted(os.listdir(default_dir))
+                if f.lower().endswith(('.jpg', '.jpeg', '.png', '.tif', '.raw'))]
 
     print("=" * 70)
     print("真实棋盘格 → 边缘裁剪 → sfrmat5 测量流程验证")

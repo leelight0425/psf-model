@@ -177,6 +177,8 @@ def train(net,shiftnet, IS, args):
 
             coe = 0.51
             id = torch.where((fovs >= (angle-coe*interval)) & (fovs <= (angle + coe*interval)))[0]
+            if id.numel() == 0:
+                continue
             weight, rot, fov = (tensor[id] for tensor in [weights, rots, fovs])
             H = tools.fov2H(fov, IS)
             sfr = sfrs[...,color,id]
@@ -217,6 +219,9 @@ def train(net,shiftnet, IS, args):
         H = Hs[index]
         angle = tools.H2fov(H,IS)
         id = torch.where((fovs >= (angle - 1)) & (fovs < (angle + 1)))[0]
+        if id.numel() == 0:
+            psf_final.append(torch.stack([rpsfs[index], gpsfs[index], bpsfs[index]], dim=-1))
+            continue
         rpsf, gpsf, bpsf = rpsfs[index].squeeze().detach(), gpsfs[index].squeeze().detach(), bpsfs[index].squeeze().detach()
         weight, rot,  offset = weights[id], rots[id], offsets[...,id]
         for epoch in range(epochs):
@@ -263,6 +268,10 @@ def train(net,shiftnet, IS, args):
     showmap = psfmap/torch.max(psfmap)
     plt.imshow(showmap.detach().cpu().numpy())
     plt.savefig(os.path.join(result_dir, 'psfmap_shift.png'))
+
+    if args.get('real', False):
+        print('Real-data mode: skipping Excel/Zernike ground-truth comparison.')
+        return
 
     gt_psfs = IS.Zer2PSF2(IS, Num=10)
     _, gt_psfmap = psf_map(gt_psfs)

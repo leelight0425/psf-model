@@ -18,8 +18,13 @@ if __name__ == '__main__':
     print(f'device = {device}')
 
     result_path = args['result_path']
-    IS = IS(filepath=args['in_path'], s_psf=args.get('s_psf'), sensor_res=args.get('sensor_res'),
-            efl=args.get('efl'), pixelsize=args.get('pixelsize'))
+    if args.get('real', False):
+        IS = IS(filepath=None, s_psf=args.get('s_psf'), sensor_res=args.get('sensor_res'),
+                efl=args['efl'], pixelsize=args['pixelsize'],
+                wavelengths=args['wavelengths'], na=args['na'], hfov=args['hfov'])
+    else:
+        IS = IS(filepath=args['in_path'], s_psf=args.get('s_psf'), sensor_res=args.get('sensor_res'),
+                efl=args.get('efl'), pixelsize=args.get('pixelsize'))
     IS.seidel_basis = IS.s_basis(IS.wf_res, type=args['net'])
 
     net = PSF_mlp(device=device)

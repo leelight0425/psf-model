@@ -12,7 +12,8 @@ import matplotlib.pyplot as plt
 
 class IS():
 
-    def __init__(self, filepath=None, device=torch.device('cpu'), pixelsize=None, s_psf=None, sensor_res=None, efl=None):
+    def __init__(self, filepath=None, device=torch.device('cpu'), pixelsize=None, s_psf=None,
+                 sensor_res=None, efl=None, wavelengths=None, na=None, hfov=None):
 
         super(IS, self).__init__()
         self.device = device
@@ -20,6 +21,9 @@ class IS():
         self.s_psf_cfg = s_psf
         self.res_cfg = sensor_res
         self.efl_cfg = efl
+        self.wl_cfg = wavelengths
+        self.na_cfg = na
+        self.hfov_cfg = hfov
         self.pixelsize = pixelsize if pixelsize is not None else 1.25
 
         # Load lens file.
@@ -27,11 +31,21 @@ class IS():
             filename = os.path.basename(filepath)  # 获取完整文件名（包含后缀）
             self.lens_name = os.path.splitext(filename)[0]
             self.load_file(filepath)
+        else:
+            if wavelengths is None or na is None or hfov is None or s_psf is None:
+                raise ValueError('filepath=None requires wavelengths, na, hfov, and s_psf')
+            self.wl = list(wavelengths)
+            self.efl = efl
+            self.na = na
+            self.hfov = int(hfov)
+            self.s_psf = int(s_psf)
+            self.diag = np.tan(np.deg2rad(self.hfov)) * self.efl / self.pixelsize
         # Move all variables to device.
         self.to(device)
         self.scale()
         self.res()
-        self.Zer2PSF()
+        if hasattr(self, 'zer'):
+            self.Zer2PSF()
 
     def to(self, device=torch.device('cpu')):
         """ Move all variables to target device.
