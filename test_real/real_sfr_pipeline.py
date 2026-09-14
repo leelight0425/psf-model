@@ -64,6 +64,7 @@ def load_image_rgb(path, bayer_pattern=None):
 
     - 相机 RAW（.dng/.arw/.nef/...）:用 rawpy 后处理（去马赛克 + 相机白平衡 + gamma）
     - 裸 Bayer RAW（.raw）:无元数据，需用 --bayer-pattern 由 OpenCV 读取单通道并去马赛克
+    - npz（.npz）:读取其中的图像数组，单通道按 --bayer-pattern 去马赛克
     - 单通道（灰度或 Bayer 马赛克 .tif）:指定 --bayer-pattern 时按 Bayer 去马赛克，否则按灰度
     - 16bit:按 1%~99% 分位数裁剪缩放到 8bit（保证棋盘格对比度）
     - 其余:BGR→RGB
@@ -114,6 +115,44 @@ def load_image_rgb(path, bayer_pattern=None):
         if img is None:
             raise SystemExit(f'{path} 无法根据文件大小 {data.nbytes} 推断单通道 Bayer 形状')
         img = cv2.cvtColor(img, code)
+    elif ext == '.npz':
+        # npz 图像通常保存为 im 数组；与图片/裸 Bayer RAW 一样继续走后续流程。
+        with np.load(path, allow_pickle=False) as archive:
+            if 'im' in archive.files:
+                img = archive['im']
+            elif len(archive.files) == 1:
+                img = archive[archive.files[0]]
+            else:
+                raise SystemExit(f'{path} 未找到唯一图像数组，包含的键为：{archive.files}')
+
+        if img.ndim not in (2, 3):
+            raise SystemExit(f'{path} 中的图像数组必须是二维或三维，实际形状为：{img.shape}')
+
+        # OpenCV Bayer 转换只支持 8bit/16bit；实际 npz 为 0~1 的 float32，先转成 16bit。
+        if img.dtype != np.uint8 and img.dtype != np.uint16:
+            if np.issubdtype(img.dtype, np.floating):
+                finite = img[np.isfinite(img)]
+                if finite.size == 0:
+                    return None
+                scale = 65535.0 if finite.max() <= 1.0 and finite.min() >= 0.0 else 1.0
+                img = np.clip(img * scale, 0, 65535).astype(np.uint16)
+            else:
+                img = np.clip(img, 0, 65535).astype(np.uint16)
+
+        if img.ndim == 2:
+            if bayer_pattern:
+                code = BAYER_TO_CV2.get(bayer_pattern.upper())
+                if code is None:
+                    raise SystemExit(f'未知 bayer pattern：{bayer_pattern}（可选 RGGB/GRBG/GBRG/BGGR）')
+                img = cv2.cvtColor(img, code)
+            else:
+                img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+        elif img.shape[2] == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        elif img.shape[2] == 4:
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
+        else:
+            raise SystemExit(f'{path} 的图像数组通道数不支持：{img.shape}')
     else:
         img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
         if img is None:
@@ -375,7 +414,7 @@ def main():
         default_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'downloads')
         args = [os.path.join(default_dir, f)
                 for f in sorted(os.listdir(default_dir))
-                if f.lower().endswith(('.jpg', '.jpeg', '.png', '.tif', '.raw'))]
+                if f.lower().endswith(('.jpg', '.jpeg', '.png', '.tif', '.raw', '.npz'))]
 
     print("=" * 70)
     print("真实棋盘格 → 边缘裁剪 → sfrmat5 测量流程验证")

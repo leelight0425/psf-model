@@ -8,7 +8,7 @@
 # ──────────────────────────────────────────
 
 # ── Sensor / camera parameters ──
-pattern_cols: 12              # checkerboard inner corners, columns
+pattern_cols: 11              # checkerboard inner corners, columns
 pattern_rows: 8               # checkerboard inner corners, rows
 
 # ── Output paths (relative to project root) ──
@@ -18,21 +18,21 @@ dataset: 'dataset'             # required by generate_fov_weight's shared direct
 result: 'result'
 real: true                 # 实拍模式:generate_fov_weight 从边缘像素位置计算 fov
 mat_dir: 'test_real/out'   # 实拍 .mat 目录(由 real_sfr_pipeline.py --save 生成)
-efl: 5.44              # 焦距 (µm, 与 xlsx 单位一致, ~10mm; 实拍相机请按实际填写)
-pixelsize: 2            # 像元尺寸 (µm)
+efl: 5440        # 焦距 (µm, 与 xlsx 单位一致,; 实拍相机请按实际填写)
+pixelsize: 2       # 像元尺寸 (µm)
 wavelengths: [0.65627, 0.58756, 0.48613]  # RGB 波长 (µm)
 na: 0.28                    # 数值孔径
 hfov: 43                    # 最大半视场角 (度)
 net: ss                    # Seidel 基底: ss=9 项 / l=10 项
-npy: './dataset/real/npy'
-lr: 5e-3
+npy: './dataset/my_real/npy'
+lr: 0.005
 epochs: 501
 interval: 1                # 训练按 fov 分箱的步长(度)
 num_psf: 21                # 视场高度 H 的采样数 (PSF 数量)
 seed: 42
-device: 'CPU'             # cuda / cpu / cuda:0
+device: 'cpu'             # cuda / cpu / cuda:0
 grid_rows: 9
 grid_cols: 11
 # 可选覆盖(不填则用 xlsx/默认值):
-sensor_res: [5575, 7434]   # 实拍照片分辨率 [高, 宽] (px)
+sensor_res: [3000, 4000]   # 实拍照片分辨率 [高, 宽] (px)
 s_psf: 31                 # PSF 核大小 (px)

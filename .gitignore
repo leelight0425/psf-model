@@ -1,3 +1,13 @@
-dataset/
-test_real/out
-*.pyc
+# 屏蔽一切, 只保留源代码
+*
+!*/
+!*.py
+!*.cpp
+!*.sh
+!*.yaml
+!*.yml
+!/.gitignore
+
+# 如需恢复某类文件, 在这里追加 ! 条目, 例如:
+!README.md
+!*.md

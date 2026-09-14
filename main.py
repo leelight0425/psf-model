@@ -5,11 +5,10 @@ import utils.train as train
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('config', nargs='?', default='./configs/63762BB.yaml')
+    parser.add_argument('config', nargs='?', default=r'./configs/real.yaml')
     ns = parser.parse_args()
     source = ns.config
     args = train.config(source)
-
     seed = int(args.get('seed', 0))
     torch.manual_seed(seed)
     print(f'seed = {seed}')

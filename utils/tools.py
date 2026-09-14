@@ -77,7 +77,7 @@ def weights(angles,bins=4):
     A = A.int()
     lcm_result = tensor_lcm(A)
     # 统计每个角度的出现次数
-    tensor = torch.where(A == 0, float('inf'), A)
+    tensor = A.to(torch.float64).masked_fill(A == 0, float('inf'))
     weight = lcm_result/tensor
     C = [b for a, b in zip(A, weight) for _ in range(a)]
     C = torch.tensor(C)
@@ -88,7 +88,7 @@ def weights2(nums):
     A = nums
     lcm_result = tensor_lcm(A)
     # 统计每个角度的出现次数
-    tensor = torch.where(A == 0, float('inf'), A)
+    tensor = A.to(torch.float64).masked_fill(A == 0, float('inf'))
     weight = lcm_result/tensor
     return weight/sum(weight)
 
@@ -191,8 +191,10 @@ def downsample(psf, size):
     elif  len(psf.shape) == 2:
         psf = psf.unsqueeze(0).unsqueeze(0)
     kernel = F.interpolate(psf, size = size, mode='bilinear', align_corners=False)
-    kernel = kernel.squeeze() / torch.sum(kernel)
-    return kernel.squeeze()
+    # 保持 batch 维:单样本 fov bin 会被 .squeeze() 压成 2 维,下游按 psf.shape[0] 遍历即出错;
+    # 每个 PSF 独立归一化到和为 1
+    kernel = kernel / kernel.sum(dim=(1, 2, 3), keepdim=True).clamp_min(1e-12)
+    return kernel.squeeze(1)
 
 
 def downsample_B(psf, scale):
@@ -263,8 +265,8 @@ def rotatepsf(psf,angle):
     psf=psf.unsqueeze(0).unsqueeze(0).cpu()
     rot= torch.tensor(angle)
     theta= torch.tensor([[torch.cos(rot), -torch.sin(rot), 0],[torch.sin(rot), torch.cos(rot), 0]]).view(1, 2, 3)
-    grid = F.affine_grid(theta, size=psf.size())
-    rotated_psf= F.grid_sample(psf.float(), grid.float())#psf1.view(1, 1, psf1.size(0), psf1.size(1)).double()double())
+    grid = F.affine_grid(theta, size=psf.size(), align_corners=False)
+    rotated_psf= F.grid_sample(psf.float(), grid.float(), align_corners=False)#psf1.view(1, 1, psf1.size(0), psf1.size(1)).double()double())
     rotated_psf=rotated_psf.squeeze()
     return rotated_psf
     # return rotated_psf/torch.sum(rotated_psf)
@@ -273,7 +275,10 @@ def fov2H(fov,IS):
     'input: fov field of view (unit:degree),output: relative normalized field height'
     # H = math.tan(math.radians(fov)) * IS.efl / IS.pixelsize/ IS.diag
     device = IS.device
-    H = torch.sin(torch.deg2rad(fov.squeeze())) / torch.sin(torch.deg2rad(torch.tensor(IS.hfov)))
+    fov_in = fov.squeeze()
+    if fov_in.dim() == 0:
+        fov_in = fov_in.unsqueeze(0)   # 单样本分箱:防止塌缩成 0 维标量
+    H = torch.sin(torch.deg2rad(fov_in)) / torch.sin(torch.deg2rad(torch.tensor(IS.hfov)))
     return H.to(device)
 
 def H2fov(H,IS):
@@ -470,11 +475,11 @@ def seidel2psf(seidel,IS,color):
         rho = rho.repeat(BS,1,1)
         for i in range(num_seidel):
             WF = WF + A[...,i] * seidel2[...,i]
-        WF = torch.where(rho >= 1, 0, WF)
+        WF = WF.masked_fill(rho >= 1, 0)
         M = WF.size(1)
         W = torch.nn.ZeroPad2d(2*M)(WF)
         phase = torch.exp(-1j * 2 * torch.pi * W)
-        phase=torch.where(phase==1,0,phase)
+        phase=phase.masked_fill(phase==1,0)
         phase= fft2(phase)
         phase= fftshift(phase)
         AP = abs(phase) ** 2

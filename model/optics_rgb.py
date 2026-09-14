@@ -154,10 +154,10 @@ class IS():
                             70 * rho ** 8 - 140 * rho ** 6 + 90 * rho ** 4 - 20 * rho ** 2 + torch.ones(M, M))  # Z60
                 for i in range(21):
                     WF = WF + A[:, :, i] * zer_co[i]
-                WF = torch.where(rho >= 1, 0, WF)
+                WF = WF.masked_fill(rho >= 1, 0)
                 W = nn.ZeroPad2d(2 * M)(WF)
                 phase = torch.exp(-1j * 2 * torch.pi * W)
-                phase = torch.where(phase == 1, 0, phase)
+                phase = phase.masked_fill(phase == 1, 0)
                 AP = abs(fftshift(fft2(phase))) ** 2
                 H = torchvision.transforms.CenterCrop(M)
                 psf = H(AP)
@@ -212,10 +212,10 @@ class IS():
                             70 * rho ** 8 - 140 * rho ** 6 + 90 * rho ** 4 - 20 * rho ** 2 + torch.ones(M, M))  # Z60
                 for i in range(21):
                     WF = WF + A[:, :, i] * zer_co[i]
-                WF = torch.where(rho >= 1, 0, WF)
+                WF = WF.masked_fill(rho >= 1, 0)
                 W = nn.ZeroPad2d(2 * M)(WF)
                 phase = torch.exp(-1j * 2 * torch.pi * W)
-                phase = torch.where(phase == 1, 0, phase)
+                phase = phase.masked_fill(phase == 1, 0)
                 AP = abs(fftshift(fft2(phase))) ** 2
                 CenterCrop = torchvision.transforms.CenterCrop(M)
                 psf = CenterCrop(AP)
@@ -263,10 +263,10 @@ class IS():
         A[..., 9] = H ** 4 * rho ** 2 * torch.cos(torch.pi / 2 - theta) ** 2
         for i in range(10):
             WF = WF + A[:, :, i] * Seidel[i]
-        WF = torch.where(rho >= 1, 0, WF)
+        WF = WF.masked_fill(rho >= 1, 0)
         W = nn.ZeroPad2d(2 * M)(WF)
         phase = torch.exp(-1j * 2 * torch.pi * W)
-        phase = torch.where(phase == 1, 0, phase)
+        phase = phase.masked_fill(phase == 1, 0)
         AP = abs(fftshift(fft2(phase))) ** 2
         H = torchvision.transforms.CenterCrop(M)
         psf = H(AP)

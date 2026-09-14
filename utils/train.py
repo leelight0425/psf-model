@@ -31,7 +31,10 @@ def rotatepsf(psf, angle):
     - output: psf [N C H W]
     """
     device = psf.device
-    rot = torch.tensor(angle).to(device)
+    if torch.is_tensor(angle):
+        rot = angle.detach().to(device)
+    else:
+        rot = torch.tensor(angle, dtype=torch.float32, device=device)
     if len(psf.shape)==2:
         psf = psf.unsqueeze(0).unsqueeze(0)
     elif len(psf.shape)==3:
@@ -47,8 +50,8 @@ def rotatepsf(psf, angle):
     theta[:, 0, 1] = -torch.sin(rot)
     theta[:, 1, 0] = torch.sin(rot)
     theta[:, 1, 1] = torch.cos(rot)
-    grid = F.affine_grid(theta, size=psf.size()).to(device)
-    rotated_psf = F.grid_sample(psf.float(),grid.float())
+    grid = F.affine_grid(theta, size=psf.size(), align_corners=False).to(device)
+    rotated_psf = F.grid_sample(psf.float(), grid.float(), align_corners=False)
     rotated_psf = rotated_psf.squeeze()/ torch.sum(rotated_psf)
     return rotated_psf
 
@@ -170,9 +173,11 @@ def train(net,shiftnet, IS, args):
 
     Hs = torch.linspace(0,1,num_psf)
     psf_all = []
+    coe_all = []
     colors = ['R','G','B']
     for color in range(3):
         psfs , H_all, i_H = [], [], 0
+        coe_list = []
         for angle in range(1,IS.hfov + interval,interval):
 
             coe = 0.51
@@ -185,7 +190,15 @@ def train(net,shiftnet, IS, args):
             IS.seidel_basis = IS.s_basis(IS.wf_res, type=args.get('net', 'ss'))
 
             for epoch in range(epochs):
-                _, _, psf = net(IS, H, color)
+                # 分块计算 PSF,控制 wavefront2psf 中 (5M)^2 复数 FFT 的峰值内存
+                psf_parts = []
+                coe_parts = []
+                for s in range(0, H.shape[0], 16):
+                    coe_c, _, psf_c = net(IS, H[s:s + 16], color)
+                    coe_parts.append(coe_c)
+                    psf_parts.append(psf_c)
+                psf = torch.cat(psf_parts, dim=0)
+                coe_bin = torch.cat(coe_parts, dim=0)
                 psf = tools.downsample(psf, IS.s_psf)
                 mtf_2d = tools.PSF2MTF(psf, size=(2 * IS.s_psf - 1) * 5)
                 mtf = tools.slice(mtf_2d, rot).to(device)
@@ -197,8 +210,10 @@ def train(net,shiftnet, IS, args):
                 if epoch % 500 == 0 and epoch > 0 :
                     print('Optimize PSF lens:{} @ fov:{}, channel:{}, epoch={}, loss = {}'.format(args['filename'], angle, colors[color], epoch, loss.cpu().detach().numpy()))
             psf_l = [psf[i,...].detach().cpu() for i in range(psf.shape[0])]
+            coe_l = [coe_bin[i,...].detach().cpu() for i in range(coe_bin.shape[0])]
             H_l = [H[i] for i in range(H.shape[0])]
             psfs= psfs + psf_l
+            coe_list = coe_list + coe_l
             H_all = H_all + H_l
         H_all = torch.tensor(H_all)
 
@@ -207,8 +222,10 @@ def train(net,shiftnet, IS, args):
             # Identify the closest normalized field height and retrieve the corresponding PSF.
             idx = torch.argmin(torch.abs(H_all-H))
             psf_all.append(psfs[idx])
+            coe_all.append(coe_list[idx])
 
     rpsfs, gpsfs ,bpsfs= [psf_all[i*len(Hs):(i+1)*len(Hs)] for i in range(3)]
+    rcoes, gcoes, bcoes = [coe_all[i*len(Hs):(i+1)*len(Hs)] for i in range(3)]
     psf_ori = [torch.stack([rpsfs[i],gpsfs[i] ,bpsfs[i]],dim=-1) for i in range(len(Hs))]
 
     # optimize chromatic aberration
@@ -249,6 +266,20 @@ def train(net,shiftnet, IS, args):
     if not os.path.exists(result_dir):
         os.makedirs(result_dir)
 
+    # 保存各视场的 Seidel 系数(generate_psf_kernels.py 用于标度律外推)。
+    # Hs: 导出网格; H_trained: 实际训练覆盖的 H(数据最大 fov 对应), 用于判断外推区。
+    np.save(os.path.join(result_dir, 'coe.npy'), {
+        'H': Hs.numpy(),
+        'R': torch.stack(rcoes).numpy(),
+        'G': torch.stack(gcoes).numpy(),
+        'B': torch.stack(bcoes).numpy(),
+        'H_trained': H_all.numpy(),
+        'basis_type': args.get('net', 'ss')}, allow_pickle=True)
+
+    # 保存训练好的网络权重: generate_psf_kernels.py 在数据洞内用精确 H 前向
+    torch.save({'net': net.state_dict(), 'shiftnet': shiftnet.state_dict()},
+               os.path.join(result_dir, 'net.pth'))
+
     # export individual PSFs per grid position (filename encodes sensor pixel coords)
     grid_rows = int(args.get('grid_rows', 9))
     grid_cols = int(args.get('grid_cols', 12))
@@ -264,7 +295,7 @@ def train(net,shiftnet, IS, args):
 
     psf_matrix, psfmap = psf_map(psf_final)
     np_save_path = os.path.join(result_dir, 'psf_after_shift.npy')
-    np.save(np_save_path,{'psf_matrix': psf_matrix.detach().cpu().numpy(), 'psfmap': psfmap.detach().cpu().numpy(), 'psfs': psf_final})
+    np.save(np_save_path,{'psf_matrix': psf_matrix.detach().cpu().numpy(), 'psfmap': psfmap.detach().cpu().numpy(), 'psfs': [q.detach().cpu() for q in psf_final]})
     showmap = psfmap/torch.max(psfmap)
     plt.imshow(showmap.detach().cpu().numpy())
     plt.savefig(os.path.join(result_dir, 'psfmap_shift.png'))

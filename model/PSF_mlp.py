@@ -27,7 +27,7 @@ class seidel2wavefront(nn.Module):
         # print(seidel2.shape)
         for i in range(num_seidel):
             WF = WF + A[..., i] * seidel2[..., i]
-        WF = torch.where(rho >= 1, 0, WF)
+        WF = WF.masked_fill(rho >= 1, 0)
         return WF
 
 
@@ -41,7 +41,7 @@ class wavefront2psf(nn.Module):
         W = nn.ZeroPad2d(2 * M)(WF)
         W = W
         phase = torch.exp(-1j * 2 * torch.pi * W)
-        phase = torch.where(phase == 1, 0, phase)
+        phase = phase.masked_fill(phase == 1, 0)
         # clq
         # print(phase.shape)
         phase = fft2(phase)
@@ -108,6 +108,9 @@ class shift_net(nn.Module):
                                  nn.LeakyReLU(), nn.Linear(20, 4), nn.Tanh()).to(device)
 
     def forward(self, H):
-        con = torch.tensor(H).to(self.device).unsqueeze(0)
-        shift = 5 * self.fc0(con)
+        if torch.is_tensor(H):
+            con = H.detach().to(self.device)
+        else:
+            con = torch.tensor(H, dtype=torch.float32, device=self.device)
+        shift = 5 * self.fc0(con.unsqueeze(0))
         return shift

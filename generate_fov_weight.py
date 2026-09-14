@@ -29,17 +29,29 @@ def config(path):
             os.makedirs(path)
     return args
 
-def save_npy(gt_list,weights, filename_l, path):
+def save_npy(gt_list,weights, filename_l, path, s_psf=None):
     lens = len(gt_list)
-    width = (len(gt_list[0]['sfr'][:, 1]) + 1) // 2
-
-    print(width)
+    if s_psf is not None:
+        # 实拍模式:sfrmat5 的 SFR 行数随 patch 尺寸变化(23~35), 而模型侧
+        # tools.slice 在 (2*s_psf-1)*5 的 MTF 上按 5px 步进取 s_psf 个点,
+        # 归一化频率 = n/(2*s_psf-1)。这里把 SFR 重采样到同一网格再保存。
+        freq_new = np.arange(s_psf) / (2 * s_psf - 1)
+        print(s_psf)
+    else:
+        freq_new = None
+        width = (len(gt_list[0]['sfr'][:, 1]) + 1) // 2
+        print(width)
 
     for img_idx in range(lens):
         filename = os.path.basename(filename_l[img_idx])
         npy_path = os.path.join(path,filename[:-4])
         # red channel(0), green channel(1), blue channel(2)
-        sfr= gt_list[img_idx]['sfr'][:,1:4][0:width]
+        if freq_new is not None:
+            sfr_orig = gt_list[img_idx]['sfr']  # (L, 5): freq, R, G, B, lum
+            sfr = np.stack([np.interp(freq_new, sfr_orig[:, 0], sfr_orig[:, c])
+                            for c in (1, 2, 3)], axis=1)
+        else:
+            sfr = gt_list[img_idx]['sfr'][:,1:4][0:width]
         # sfr_g = gt_list[img_idx]['sfr'][:,2][0:width]
         # sfr_b = gt_list[img_idx]['sfr'][:,3][0:width]
         weight = weights[img_idx]
@@ -66,7 +78,7 @@ def fov_from_position(temp, efl, pixelsize):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('config', nargs='?', default='configs/ss.yaml')
+    parser.add_argument('config', nargs='?', default='configs/real.yaml')
     ns = parser.parse_args()
     path = ns.config
     args = config(path)
@@ -125,7 +137,8 @@ if __name__ == "__main__":
     weights_all1 = weights_all1/torch.sum(weights_all1)
     gt_list = [item for sublist in gt_list for item in sublist]
     filename_l = [item for sublist in filename_l for item in sublist]
-    save_npy(gt_list, weights_all1, filename_l, args['npy'])
+    save_npy(gt_list, weights_all1, filename_l, args['npy'],
+             s_psf=int(args['s_psf']) if real else None)
 
 
 

@@ -415,6 +415,6 @@ def gradient(image,epsilon):
     data1  = torch.stack(data,dim=1)
     data1 = data1/torch.max(data1)
     # data2 = torch.where(abs(data1) > epsilon,1, data1**2/(epsilon**2))
-    data2 = torch.where(abs(data1) > epsilon, 1, data1 ** 2)
+    data2 = (data1 ** 2).masked_fill(abs(data1) > epsilon, 1)
 
     return torch.sum(data2)

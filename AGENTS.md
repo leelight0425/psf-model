@@ -15,6 +15,7 @@ python main.py                                      # configs/63762BB.yaml
 python generate_edges_rgb.py                       # synthetic edges; configs/ss.yaml
 python sfrmat5_py.py crop_dir mat_dir              # ISO 12233 SFR; omit args for defaults
 python generate_fov_weight.py configs/ss.yaml      # omit config for this default
+python generate_psf_kernels.py configs/real.yaml   # annotated PSF kernels from latest result
 python test_real/real_sfr_pipeline.py image.tif --save test_real/out
 python test_mosaic_demosaic.py                    # only focused executable check
 ```
@@ -49,6 +50,8 @@ python main.py configs/real.yaml
 ## Invariants
 
 - The networks predict physical Seidel coefficients, not PSF pixels; RGB PSFs are separate and `shift_net` models R/B lateral shift relative to G.
+- Training exports `coe.npy` (Seidel coefficients per exported field height, plus `H_trained` coverage) alongside `psf.npy`; `generate_psf_kernels.py` uses it for scaling-law extrapolation beyond the trained field range (nearest-neighbor fill with an `_EXT` marker when absent).
+- `generate_psf_kernels.py` uses absolute sensor pixel coordinates (`cx_px`/`cy_px`) and derives fov/H with the same formulas as `fov_from_position` and `tools.fov2H`.
 - Preserve the `F=5` coordinate scaling in `utils/tools.py:slice`; it reduces MTF interpolation quantization.
 - Bayer handling assumes RGGB in the model checkerboard path; changing the sensor pattern requires revisiting mosaic/demosaic flips.
 - Results are written under `result/{filename}/`; exports include PSF maps, `compare.png`, and `psf_grid` `.npz` files.
